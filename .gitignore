@@ -1,0 +1,100 @@
+# ======================
+# Python
+# ======================
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+venv/
+env/
+ENV/
+.venv/
+*.env.local
+
+# ======================
+# Environment
+# ======================
+.env
+backend/.env
+!backend/.env.example
+!frontend/.env.example
+frontend/.env
+frontend/.env.local
+frontend/.env.production
+
+# ======================
+# FastAPI Uploads
+# ======================
+backend/uploads/*
+backend/uploads/**/*
+!backend/uploads/.gitkeep
+
+# ======================
+# Node / Vite
+# ======================
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+
+# ======================
+# Generated Tree Files
+# ======================
+*_tree.txt
+*_files.txt
+clean_tree.txt
+project_tree.txt
+project_files.txt
+root_files.txt
+frontend_tree.txt
+frontend_files.txt
+backend_tree.txt
+backend_files.txt
+
+# ======================
+# IDE
+# ======================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ======================
+# Logs
+# ======================
+*.log
+npm-debug.log*
+yarn-debug.log*
+
+# ======================
+# Database
+# ======================
+*.db
+*.sqlite3
+
+# ======================
+# Testing
+# ======================
+coverage/
+htmlcov/
+.pytest_cache/
+
+# ======================
+# OS
+# ======================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
