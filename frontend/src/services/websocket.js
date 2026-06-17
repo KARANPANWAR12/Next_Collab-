@@ -8,7 +8,7 @@ export const connectWebSocket = (workspaceId, userId) => {
   if (socket && socket.readyState === WebSocket.OPEN) return;
   currentWorkspaceId = workspaceId;
   currentUserId = userId;
-  const wsUrl = import.meta.env.VITE_WS_URL || "ws://127.0.0.1:8000";
+  const wsUrl = import.meta.env.VITE_WS_URL || "wss://nexcollab-backend.onrender.com";
   socket = new WebSocket(`${wsUrl}/ws/${workspaceId}/${userId}`);
 
   socket.onopen = () => {
