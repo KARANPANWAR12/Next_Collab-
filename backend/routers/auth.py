@@ -13,16 +13,18 @@ AVATAR_COLORS = [
     "#10b981", "#0ea5e9", "#f59e0b", "#ef4444"
 ]
 
-
 @router.post("/signup", response_model=Token, status_code=201)
 def signup(user_data: UserCreate, db: Session = Depends(get_db)):
-    if db.query(User).filter(User.email == user_data.email).first():
+    # Normalize email to lowercase
+    email_lower = user_data.email.lower()
+    
+    if db.query(User).filter(User.email == email_lower).first():
         raise HTTPException(status_code=400, detail="Email already registered")
     if db.query(User).filter(User.username == user_data.username).first():
         raise HTTPException(status_code=400, detail="Username already taken")
 
     user = User(
-        email=user_data.email,
+        email=email_lower,  # stored in lowercase
         username=user_data.username,
         full_name=user_data.full_name,
         hashed_password=get_password_hash(user_data.password),
@@ -34,11 +36,12 @@ def signup(user_data: UserCreate, db: Session = Depends(get_db)):
     token = create_access_token({"sub": str(user.id)})
     return {"access_token": token, "token_type": "bearer", "user": user}
 
-
 @router.post("/login", response_model=Token)
 def login(credentials: dict, db: Session = Depends(get_db)):
-    email = credentials.get("email")
+    # Convert email to lowercase for case‑insensitive lookup
+    email = credentials.get("email", "").strip().lower()
     password = credentials.get("password")
+    
     user = db.query(User).filter(User.email == email).first()
     if not user or not verify_password(password, user.hashed_password):
         raise HTTPException(
@@ -48,11 +51,9 @@ def login(credentials: dict, db: Session = Depends(get_db)):
     token = create_access_token({"sub": str(user.id)})
     return {"access_token": token, "token_type": "bearer", "user": user}
 
-
 @router.get("/me", response_model=UserOut)
 async def get_me(current_user: User = Depends(get_current_user)):
     return current_user
-
 
 @router.patch("/profile", response_model=UserOut)
 async def update_profile(
@@ -70,7 +71,6 @@ async def update_profile(
     db.refresh(current_user)
     return current_user
 
-
 @router.post("/change-password")
 async def change_password(
     data: PasswordChange,
@@ -82,7 +82,6 @@ async def change_password(
     current_user.hashed_password = get_password_hash(data.new_password)
     db.commit()
     return {"message": "Password changed successfully"}
-
 
 @router.get("/users", response_model=list[UserOut])
 async def search_users(

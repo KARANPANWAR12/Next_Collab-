@@ -7,7 +7,7 @@ import json, os
 from database import engine, get_db, Base
 from models import user as user_model, workspace as ws_model, document as doc_model
 from models import message as msg_model, file as file_model, notification as notif_model
-from routers import auth, workspaces, documents, messages, ai_assistant, files, notifications, search
+from routers import auth, workspaces, documents, messages, ai_assistant, files, notifications, search, admin  # <-- added admin
 from core.config import settings
 from core.websocket_manager import ConnectionManager
 
@@ -38,6 +38,7 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 manager = ConnectionManager()
 
+# ─── Include Routers ──────────────────────────────────────────────────────
 app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(workspaces.router, prefix="/api/workspaces", tags=["Workspaces"])
 app.include_router(documents.router, prefix="/api/documents", tags=["Documents"])
@@ -46,18 +47,18 @@ app.include_router(ai_assistant.router, prefix="/api/ai", tags=["AI Assistant"])
 app.include_router(files.router, prefix="/api/files", tags=["Files"])
 app.include_router(notifications.router, prefix="/api/notifications", tags=["Notifications"])
 app.include_router(search.router, prefix="/api/search", tags=["Search"])
+app.include_router(admin.router)  # <-- added admin router
 
-
+# ─── Root & Health ──────────────────────────────────────────────────────────
 @app.get("/")
 def root():
     return {"message": "NexCollab API v2.0 running", "docs": "/docs"}
-
 
 @app.get("/api/health")
 def health():
     return {"status": "healthy", "version": "2.0.0"}
 
-
+# ─── WebSocket ──────────────────────────────────────────────────────────────
 @app.websocket("/ws/{workspace_id}/{user_id}")
 async def websocket_endpoint(
     websocket: WebSocket,
