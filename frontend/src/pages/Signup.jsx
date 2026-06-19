@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { Eye, EyeOff, Sparkles } from "lucide-react";
-import api from "../services/api";
+import { useAuth } from "../context/AuthContext";   // ✅ Use context
 import toast from "react-hot-toast";
 
 function Signup() {
   const navigate = useNavigate();
+  const { signup } = useAuth();   // ✅ Use context signup
   const [form, setForm] = useState({ full_name: "", username: "", email: "", password: "" });
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -15,14 +16,16 @@ function Signup() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!form.full_name || !form.username || !form.email || !form.password) {
-      toast.error("All fields are required"); return;
+      toast.error("All fields are required");
+      return;
     }
-    if (form.password.length < 6) { toast.error("Password must be at least 6 characters"); return; }
+    if (form.password.length < 6) {
+      toast.error("Password must be at least 6 characters");
+      return;
+    }
     try {
       setLoading(true);
-      const res = await api.post("/api/auth/signup", form);
-      localStorage.setItem("token", res.data.access_token);
-      localStorage.setItem("user", JSON.stringify(res.data.user));
+      const data = await signup(form);   // ✅ Context handles localStorage + state
       toast.success("Account created successfully!");
       navigate("/dashboard");
     } catch (err) {
@@ -98,4 +101,5 @@ function Signup() {
     </div>
   );
 }
+
 export default Signup;

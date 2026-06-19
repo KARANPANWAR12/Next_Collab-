@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { Eye, EyeOff, Sparkles } from "lucide-react";
-import api from "../services/api";
+import { useAuth } from "../context/AuthContext";
 import toast from "react-hot-toast";
 
 function Login() {
   const navigate = useNavigate();
+  const { login } = useAuth(); // ✅ Use the context login, NOT direct API call
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPass, setShowPass] = useState(false);
@@ -13,13 +14,14 @@ function Login() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!email || !password) { toast.error("Fill in all fields"); return; }
+    if (!email || !password) {
+      toast.error("Fill in all fields");
+      return;
+    }
     try {
       setLoading(true);
-      const res = await api.post("/api/auth/login", { email, password });
-      localStorage.setItem("token", res.data.access_token);
-      localStorage.setItem("user", JSON.stringify(res.data.user));
-      toast.success(`Welcome back, ${res.data.user.full_name}!`);
+      const data = await login(email, password);
+      toast.success(`Welcome back, ${data.user.full_name}!`);
       navigate("/dashboard");
     } catch (err) {
       toast.error(err.response?.data?.detail || "Invalid credentials");
@@ -44,7 +46,10 @@ function Login() {
           <p className="text-slate-400 text-sm mt-1">Sign in to your account</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="bg-slate-900 border border-slate-800 rounded-2xl p-8 space-y-5 shadow-2xl">
+        <form
+          onSubmit={handleSubmit}
+          className="bg-slate-900 border border-slate-800 rounded-2xl p-8 space-y-5 shadow-2xl"
+        >
           <div className="space-y-1.5">
             <label className="text-slate-400 text-xs font-medium">Email</label>
             <input
@@ -65,7 +70,11 @@ function Login() {
                 placeholder="Your password"
                 className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 pr-11 text-white text-sm outline-none focus:border-indigo-500 transition placeholder:text-slate-600"
               />
-              <button type="button" onClick={() => setShowPass(!showPass)} className="absolute right-3 top-3.5 text-slate-500 hover:text-white transition">
+              <button
+                type="button"
+                onClick={() => setShowPass(!showPass)}
+                className="absolute right-3 top-3.5 text-slate-500 hover:text-white transition"
+              >
                 {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             </div>
@@ -79,11 +88,17 @@ function Login() {
           </button>
           <p className="text-center text-slate-500 text-sm">
             Don't have an account?{" "}
-            <Link to="/signup" className="text-indigo-400 hover:text-indigo-300 font-medium transition">Sign up</Link>
+            <Link
+              to="/signup"
+              className="text-indigo-400 hover:text-indigo-300 font-medium transition"
+            >
+              Sign up
+            </Link>
           </p>
         </form>
       </div>
     </div>
   );
 }
+
 export default Login;

@@ -10,6 +10,26 @@ export function AuthProvider({ children }) {
   });
   const [loading, setLoading] = useState(false);
 
+  // On app mount, validate the stored token and restore user session
+  useEffect(() => {
+    const token = localStorage.getItem("token");
+    if (token && !user) {
+      // If we have a token but no user in state, fetch the user profile
+      api
+        .get("/api/auth/me")
+        .then((res) => {
+          setUser(res.data);
+          localStorage.setItem("user", JSON.stringify(res.data));
+        })
+        .catch(() => {
+          // Token is invalid or expired — clear everything
+          localStorage.removeItem("token");
+          localStorage.removeItem("user");
+          setUser(null);
+        });
+    }
+  }, []);
+
   const login = async (email, password) => {
     const res = await api.post("/api/auth/login", { email, password });
     localStorage.setItem("token", res.data.access_token);
