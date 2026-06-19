@@ -5,9 +5,27 @@ let currentWorkspaceId = null;
 let currentUserId = null;
 
 export const connectWebSocket = (workspaceId, userId) => {
-  if (socket && socket.readyState === WebSocket.OPEN) return;
+  // Only reuse if same workspace AND user
+  if (
+    socket &&
+    socket.readyState === WebSocket.OPEN &&
+    currentWorkspaceId === workspaceId &&
+    currentUserId === userId
+  ) {
+    return;
+  }
+
+  // Close any existing connection cleanly – prevent auto-reconnect from old socket
+  if (socket) {
+    const oldSocket = socket;
+    socket = null;                // clear global reference
+    oldSocket.onclose = null;     // prevent reconnect timer from firing
+    oldSocket.close();
+  }
+
   currentWorkspaceId = workspaceId;
   currentUserId = userId;
+
   const wsUrl = import.meta.env.VITE_WS_URL || "wss://nexcollab-backend.onrender.com";
   socket = new WebSocket(`${wsUrl}/ws/${workspaceId}/${userId}`);
 
@@ -31,7 +49,7 @@ export const connectWebSocket = (workspaceId, userId) => {
   socket.onclose = () => {
     console.log("❌ WebSocket Disconnected");
     socket = null;
-    // Auto-reconnect after 3s
+    // Auto-reconnect only if we still have a valid workspace/user
     if (currentWorkspaceId && currentUserId) {
       reconnectTimer = setTimeout(() => {
         connectWebSocket(currentWorkspaceId, currentUserId);

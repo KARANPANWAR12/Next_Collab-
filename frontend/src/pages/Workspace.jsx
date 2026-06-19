@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   useParams,
   useNavigate,
@@ -48,6 +48,12 @@ function Workspace() {
   const [unreadChat, setUnreadChat] = useState(0);
   const currentUser = JSON.parse(localStorage.getItem("user")) || {};
 
+  // --- FIX: activeTabRef to avoid listener re-registration ---
+  const activeTabRef = useRef(activeTab);
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
+
   // Keep activeTab in sync with URL changes
   useEffect(() => {
     const tab = searchParams.get("tab");
@@ -64,8 +70,10 @@ function Workspace() {
     return () => disconnectWebSocket();
   }, [id]);
 
+  // WebSocket setup – only depends on workspace and user
   useEffect(() => {
     if (!workspace) return;
+
     connectWebSocket(Number(id), currentUser.id);
 
     const handler = (data) => {
@@ -80,14 +88,14 @@ function Workspace() {
             ? prev.includes(data.user_id) ? prev : [...prev, data.user_id]
             : prev.filter((uid) => uid !== data.user_id)
         );
-      } else if (data.type === "chat_message" && activeTab !== "chat") {
+      } else if (data.type === "chat_message" && activeTabRef.current !== "chat") {
         setUnreadChat((n) => n + 1);
       }
     };
 
     addWSListener(handler);
     return () => removeWSListener(handler);
-  }, [workspace, id, activeTab]);
+  }, [workspace, id, currentUser.id]);   // <-- FIXED dependency array
 
   const fetchWorkspace = async () => {
     try {
@@ -132,21 +140,18 @@ function Workspace() {
           )}
         </div>
         <div className="flex items-center gap-3 shrink-0">
-          {/* Online Users */}
           {onlineUsers.length > 0 && (
             <div className="hidden sm:flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-emerald-500" />
               <span className="text-emerald-400 text-xs">{onlineUsers.length} online</span>
             </div>
           )}
-          {/* WS Status */}
           <div className="flex items-center gap-1.5">
             {wsConnected
               ? <Wifi size={14} className="text-emerald-400" />
               : <WifiOff size={14} className="text-slate-500" />
             }
           </div>
-          {/* Invite code quick copy */}
           {workspace?.invite_code && (
             <button
               onClick={() => {

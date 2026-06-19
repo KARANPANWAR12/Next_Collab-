@@ -122,6 +122,19 @@ function DocumentEditor({ workspaceId, onDocumentChange }) {
   const handleEditorInput = () => {
     const c = editorRef.current?.innerHTML || "";
     setContent(c);
+
+    // --- FIX: broadcast immediately to others ---
+    if (selectedDoc?.id) {
+      sendWSMessage({
+        type: "document_update",
+        document_id: selectedDoc.id,
+        content: c,
+        title,
+        username: currentUser.username,
+      });
+    }
+
+    // Keep auto-save for persistence
     triggerAutoSave(title, c);
   };
 

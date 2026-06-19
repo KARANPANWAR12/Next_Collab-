@@ -1,0 +1,1221 @@
+===== CHAT PANEL ===== 
+import { useState, useEffect, useRef, useCallback } from "react";
+import { Send, Smile, Hash, Wifi, WifiOff } from "lucide-react";
+import api from "../services/api";
+import { connectWebSocket, sendWSMessage, addWSListener, removeWSListener, getWSStatus } from "../services/websocket";
+import toast from "react-hot-toast";
+
+function ChatPanel({ workspaceId }) {
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [typingUsers, setTypingUsers] = useState([]);
+  const [onlineUsers, setOnlineUsers] = useState([]);
+  const [wsStatus, setWsStatus] = useState("connecting");
+  const bottomRef = useRef(null);
+  const typingTimeouts = useRef({});
+  const currentUser = JSON.parse(localStorage.getItem("user")) || {};
+
+  // Fetch history
+  useEffect(() => {
+    const fetchMessages = async () => {
+      try {
+        const res = await api.get(`/api/messages/${workspaceId}?limit=50`);
+        setMessages(res.data);
+      } catch {
+        toast.error("Failed to load messages");
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchMessages();
+  }, [workspaceId]);
+
+  // WebSocket listener
+  const handleWSMessage = useCallback((data) => {
+    if (data.type === "chat_message") {
+      setMessages((prev) => {
+        if (prev.find((m) => m.id === data.id)) return prev;
+        return [...prev, {
+          id: data.id,
+          content: data.content,
+          workspace_id: workspaceId,
+          sender_id: data.user_id,
+          is_ai: false,
+          created_at: data.timestamp,
+          sender: {
+            id: data.user_id,
+            username: data.username,
+            full_name: data.full_name,
+            avatar_color: data.avatar_color
+          }
+        }];
+      });
+    } else if (data.type === "typing") {
+      const { user_id, username, is_typing } = data;
+      if (user_id === currentUser.id) return;
+      setTypingUsers((prev) => {
+        if (is_typing) {
+          if (prev.find((u) => u.user_id === user_id)) return prev;
+          return [...prev, { user_id, username }];
+        }
+        return prev.filter((u) => u.user_id !== user_id);
+      });
+    } else if (data.type === "connection_established") {
+      setOnlineUsers(data.online_users || []);
+      setWsStatus("connected");
+    } else if (data.type === "user_left") {
+      setOnlineUsers((prev) => prev.filter((id) => id !== data.user_id));
+      setTypingUsers((prev) => prev.filter((u) => u.user_id !== data.user_id));
+    } else if (data.type === "presence") {
+      setOnlineUsers((prev) =>
+        data.status === "online"
+          ? prev.includes(data.user_id) ? prev : [...prev, data.user_id]
+          : prev.filter((id) => id !== data.user_id)
+      );
+    }
+  }, [workspaceId, currentUser.id]);
+
+  useEffect(() => {
+    addWSListener(handleWSMessage);
+    const checkStatus = setInterval(() => {
+      setWsStatus(getWSStatus());
+    }, 2000);
+    return () => {
+      removeWSListener(handleWSMessage);
+      clearInterval(checkStatus);
+    };
+  }, [handleWSMessage]);
+
+  // Auto-scroll
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, typingUsers]);
+
+  const sendMessage = async (e) => {
+    e.preventDefault();
+    if (!input.trim() || sending) return;
+    const content = input.trim();
+    setInput("");
+    setSending(true);
+
+    // Stop typing indicator
+    sendWSMessage({ type: "typing", username: currentUser.username, is_typing: false });
+
+    const sent = sendWSMessage({
+      type: "chat_message",
+      content,
+      workspace_id: workspaceId,
+    });
+
+    if (!sent) {
+      // Fallback to REST
+      try {
+        const res = await api.post(`/api/messages/${workspaceId}`, { content });
+        setMessages((prev) => [...prev, res.data]);
+      } catch {
+        toast.error("Failed to send message");
+        setInput(content);
+      }
+    }
+    setSending(false);
+  };
+
+  const handleTyping = (e) => {
+    setInput(e.target.value);
+    sendWSMessage({ type: "typing", username: currentUser.username, is_typing: true });
+    if (typingTimeouts.current.self) clearTimeout(typingTimeouts.current.self);
+    typingTimeouts.current.self = setTimeout(() => {
+      sendWSMessage({ type: "typing", username: currentUser.username, is_typing: false });
+    }, 2000);
+  };
+
+  const formatTime = (ts) => {
+    if (!ts) return "";
+    const d = new Date(ts);
+    return d.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+  };
+
+  const formatDate = (ts) => {
+    if (!ts) return "";
+    const d = new Date(ts);
+    const today = new Date();
+    if (d.toDateString() === today.toDateString()) return "Today";
+    const yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
+    if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
+    return d.toLocaleDateString("en-IN", { month: "short", day: "numeric" });
+  };
+
+  // Group messages by sender + time proximity
+  const groupMessages = () => {
+    const groups = [];
+    let lastDate = null;
+    messages.forEach((msg, i) => {
+      const msgDate = formatDate(msg.created_at);
+      if (msgDate !== lastDate) {
+        groups.push({ type: "date", label: msgDate });
+        lastDate = msgDate;
+      }
+      const prev = messages[i - 1];
+      const sameAuthor = prev && prev.sender_id === msg.sender_id;
+      const close = prev && (new Date(msg.created_at) - new Date(prev.created_at)) < 60000;
+      groups.push({ type: "message", data: msg, compact: sameAuthor && close });
+    });
+    return groups;
+  };
+
+  const groups = groupMessages();
+
+  return (
+    <div className="flex flex-col h-full bg-slate-950">
+      {/* Header */}
+      <div className="flex items-center justify-between px-5 py-3 border-b border-slate-800 bg-slate-900/50 shrink-0">
+        <div className="flex items-center gap-2">
+          <Hash size={18} className="text-indigo-400" />
+          <span className="text-white font-semibold">Team Chat</span>
+          {onlineUsers.length > 0 && (
+            <span className="text-emerald-400 text-xs bg-emerald-400/10 px-2 py-0.5 rounded-full">
+              {onlineUsers.length} online
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5">
+          {wsStatus === "connected"
+            ? <><Wifi size={14} className="text-emerald-400" /><span className="text-emerald-400 text-xs">Live</span></>
+            : <><WifiOff size={14} className="text-slate-500" /><span className="text-slate-500 text-xs">Reconnecting…</span></>
+          }
+        </div>
+      </div>
+
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-1">
+        {loading ? (
+          <div className="flex items-center justify-center h-full">
+            <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+          </div>
+        ) : messages.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full gap-3 text-center">
+            <div className="w-16 h-16 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center">
+              <Hash size={28} className="text-slate-600" />
+            </div>
+            <p className="text-slate-400 font-medium">No messages yet</p>
+            <p className="text-slate-600 text-sm">Start the conversation!</p>
+          </div>
+        ) : (
+          groups.map((item, idx) => {
+            if (item.type === "date") {
+              return (
+                <div key={`date-${idx}`} className="flex items-center gap-3 py-2">
+                  <div className="flex-1 h-px bg-slate-800" />
+                  <span className="text-slate-600 text-xs">{item.label}</span>
+                  <div className="flex-1 h-px bg-slate-800" />
+                </div>
+              );
+            }
+            const msg = item.data;
+            const isMine = msg.sender_id === currentUser.id;
+            return (
+              <div key={msg.id} className={`flex gap-3 ${item.compact ? "mt-0.5" : "mt-3"} ${isMine ? "flex-row-reverse" : ""}`}>
+                {!item.compact ? (
+                  <div
+                    className="w-8 h-8 rounded-full flex items-center justify-center text-white font-bold text-xs shrink-0 mt-0.5"
+                    style={{ backgroundColor: msg.sender?.avatar_color || "#6366f1" }}
+                  >
+                    {(msg.sender?.full_name || msg.sender?.username || "U")[0].toUpperCase()}
+                  </div>
+                ) : (
+                  <div className="w-8 shrink-0" />
+                )}
+                <div className={`max-w-[72%] ${isMine ? "items-end" : "items-start"} flex flex-col`}>
+                  {!item.compact && (
+                    <div className={`flex items-baseline gap-2 mb-1 ${isMine ? "flex-row-reverse" : ""}`}>
+                      <span className="text-white text-xs font-semibold">
+                        {isMine ? "You" : (msg.sender?.full_name || msg.sender?.username)}
+                      </span>
+                      <span className="text-slate-600 text-xs">{formatTime(msg.created_at)}</span>
+                    </div>
+                  )}
+                  <div className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed break-words ${
+                    isMine
+                      ? "bg-gradient-to-br from-indigo-600 to-purple-600 text-white rounded-tr-sm"
+                      : "bg-slate-800 text-slate-200 rounded-tl-sm"
+                  }`}>
+                    {msg.content}
+                  </div>
+                  {item.compact && (
+                    <span className="text-slate-700 text-xs mt-0.5 px-1">{formatTime(msg.created_at)}</span>
+                  )}
+                </div>
+              </div>
+            );
+          })
+        )}
+
+        {/* Typing indicators */}
+        {typingUsers.length > 0 && (
+          <div className="flex items-center gap-3 mt-2">
+            <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center shrink-0">
+              <span className="text-slate-400 text-xs">...</span>
+            </div>
+            <div className="bg-slate-800 px-4 py-2 rounded-2xl rounded-tl-sm">
+              <div className="flex items-center gap-1.5">
+                <span className="text-slate-400 text-xs">
+                  {typingUsers.map((u) => u.username).join(", ")} {typingUsers.length === 1 ? "is" : "are"} typing
+                </span>
+                <div className="flex gap-0.5">
+                  {[0, 1, 2].map((i) => (
+                    <span
+                      key={i}
+                      className="w-1.5 h-1.5 bg-slate-500 rounded-full animate-bounce"
+                      style={{ animationDelay: `${i * 0.15}s` }}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Input */}
+      <div className="px-4 py-3 border-t border-slate-800 bg-slate-900/50 shrink-0">
+        <form onSubmit={sendMessage} className="flex items-center gap-3">
+          <div
+            className="w-8 h-8 rounded-full flex items-center justify-center text-white font-bold text-xs shrink-0"
+            style={{ backgroundColor: currentUser.avatar_color || "#6366f1" }}
+          >
+            {(currentUser.full_name || "U")[0].toUpperCase()}
+          </div>
+          <div className="flex-1 flex items-center bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 gap-3 focus-within:border-indigo-500 transition">
+            <input
+              type="text"
+              value={input}
+              onChange={handleTyping}
+              placeholder="Type a message…"
+              className="flex-1 bg-transparent outline-none text-white text-sm placeholder:text-slate-500"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={!input.trim() || sending}
+            className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-600 to-purple-600 flex items-center justify-center hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+          >
+            <Send size={16} className="text-white" />
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+export default ChatPanel;
+ 
+===== DOCUMENT EDITOR ===== 
+import { useState, useEffect, useRef, useCallback } from "react";
+import {
+  FileText, Plus, Save, Trash2, Bold, Italic, Underline,
+  List, AlignLeft, Heading, Code, Link2, History, X, RotateCcw,
+  ChevronDown, ChevronRight, Clock
+} from "lucide-react";
+import api from "../services/api";
+import { sendWSMessage, addWSListener, removeWSListener } from "../services/websocket";
+import toast from "react-hot-toast";
+
+const TAG_COLORS = ["bg-indigo-500/20 text-indigo-300", "bg-emerald-500/20 text-emerald-300", "bg-amber-500/20 text-amber-300", "bg-rose-500/20 text-rose-300"];
+
+function DocumentEditor({ workspaceId, onDocumentChange }) {
+  const [docs, setDocs] = useState([]);
+  const [selectedDoc, setSelectedDoc] = useState(null);
+  const [title, setTitle] = useState("");
+  const [content, setContent] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [lastSaved, setLastSaved] = useState(null);
+  const [showVersions, setShowVersions] = useState(false);
+  const [versions, setVersions] = useState([]);
+  const [creating, setCreating] = useState(false);
+  const editorRef = useRef(null);
+  const autoSaveTimer = useRef(null);
+  const currentUser = JSON.parse(localStorage.getItem("user")) || {};
+
+  useEffect(() => { fetchDocs(); }, [workspaceId]);
+
+  const handleWSMessage = useCallback((data) => {
+    if (data.type === "document_update" && data.document_id === selectedDoc?.id) {
+      if (data.user_id !== currentUser.id) {
+        setContent(data.content);
+        if (editorRef.current && data.content !== editorRef.current.innerHTML) {
+          const sel = window.getSelection();
+          const range = sel?.rangeCount ? sel.getRangeAt(0) : null;
+          editorRef.current.innerHTML = data.content;
+          if (range) try { sel.removeAllRanges(); sel.addRange(range); } catch {}
+        }
+        if (data.title) setTitle(data.title);
+      }
+    }
+  }, [selectedDoc?.id, currentUser.id]);
+
+  useEffect(() => {
+    addWSListener(handleWSMessage);
+    return () => removeWSListener(handleWSMessage);
+  }, [handleWSMessage]);
+
+  const fetchDocs = async () => {
+    try {
+      const res = await api.get(`/api/documents/${workspaceId}`);
+      setDocs(res.data);
+    } catch {}
+  };
+
+  const selectDoc = (doc) => {
+    setSelectedDoc(doc);
+    setTitle(doc.title);
+    setContent(doc.content || "");
+    setShowVersions(false);
+    onDocumentChange?.(doc);
+    setTimeout(() => {
+      if (editorRef.current) editorRef.current.innerHTML = doc.content || "";
+    }, 0);
+  };
+
+  const createDoc = async () => {
+    try {
+      setCreating(true);
+      const res = await api.post(`/api/documents/${workspaceId}`, {
+        title: "Untitled Document",
+        content: "",
+        doc_type: "note",
+        tags: []
+      });
+      setDocs((prev) => [res.data, ...prev]);
+      selectDoc(res.data);
+      toast.success("Document created");
+    } catch {
+      toast.error("Failed to create document");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const saveDoc = async (docId, titleVal, contentVal) => {
+    if (!docId) return;
+    try {
+      setSaving(true);
+      const res = await api.patch(`/api/documents/doc/${docId}`, {
+        title: titleVal,
+        content: contentVal,
+      });
+      setDocs((prev) => prev.map((d) => d.id === docId ? res.data : d));
+      setLastSaved(new Date());
+      sendWSMessage({
+        type: "document_update",
+        document_id: docId,
+        content: contentVal,
+        title: titleVal,
+        username: currentUser.username
+      });
+    } catch {
+      toast.error("Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Auto-save after 2s of inactivity
+  const triggerAutoSave = (t, c) => {
+    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    autoSaveTimer.current = setTimeout(() => saveDoc(selectedDoc?.id, t, c), 2000);
+  };
+
+  const handleTitleChange = (e) => {
+    const val = e.target.value;
+    setTitle(val);
+    triggerAutoSave(val, content);
+  };
+
+  const handleEditorInput = () => {
+    const c = editorRef.current?.innerHTML || "";
+    setContent(c);
+    triggerAutoSave(title, c);
+  };
+
+  const deleteDoc = async (docId) => {
+    if (!confirm("Delete this document?")) return;
+    try {
+      await api.delete(`/api/documents/doc/${docId}`);
+      setDocs((prev) => prev.filter((d) => d.id !== docId));
+      if (selectedDoc?.id === docId) { setSelectedDoc(null); setTitle(""); setContent(""); }
+      toast.success("Document deleted");
+    } catch {
+      toast.error("Failed to delete");
+    }
+  };
+
+  const fetchVersions = async () => {
+    if (!selectedDoc) return;
+    try {
+      const res = await api.get(`/api/documents/doc/${selectedDoc.id}/versions`);
+      setVersions(res.data);
+      setShowVersions(true);
+    } catch {
+      toast.error("Failed to load versions");
+    }
+  };
+
+  const restoreVersion = async (versionId) => {
+    if (!confirm("Restore this version? Current content will be saved as a new version.")) return;
+    try {
+      const res = await api.post(`/api/documents/doc/${selectedDoc.id}/restore/${versionId}`);
+      selectDoc(res.data);
+      setDocs((prev) => prev.map((d) => d.id === res.data.id ? res.data : d));
+      setShowVersions(false);
+      toast.success("Version restored");
+    } catch {
+      toast.error("Failed to restore");
+    }
+  };
+
+  // Rich Text Commands
+  const execCmd = (cmd, value = null) => {
+    editorRef.current?.focus();
+    document.execCommand(cmd, false, value);
+    handleEditorInput();
+  };
+
+  const toolbar = [
+    { icon: Bold, cmd: "bold", title: "Bold (Ctrl+B)" },
+    { icon: Italic, cmd: "italic", title: "Italic (Ctrl+I)" },
+    { icon: Underline, cmd: "underline", title: "Underline (Ctrl+U)" },
+    null,
+    { icon: Heading, cmd: "formatBlock", value: "<h2>", title: "Heading" },
+    { icon: AlignLeft, cmd: "formatBlock", value: "<p>", title: "Paragraph" },
+    null,
+    { icon: List, cmd: "insertUnorderedList", title: "Bullet List" },
+    { icon: Code, cmd: "formatBlock", value: "<pre>", title: "Code Block" },
+  ];
+
+  const handleKeyDown = (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+      e.preventDefault();
+      saveDoc(selectedDoc?.id, title, content);
+    }
+    if (e.key === "Tab") {
+      e.preventDefault();
+      document.execCommand("insertText", false, "    ");
+    }
+  };
+
+  return (
+    <div className="flex h-full">
+      {/* Sidebar - Doc List */}
+      <div className="w-56 shrink-0 border-r border-slate-800 bg-slate-900/50 flex flex-col">
+        <div className="p-3 border-b border-slate-800">
+          <button
+            onClick={createDoc}
+            disabled={creating}
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 text-white text-xs font-semibold hover:opacity-90 transition disabled:opacity-50"
+          >
+            <Plus size={14} /> New Document
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+          {docs.length === 0 ? (
+            <p className="text-slate-600 text-xs text-center py-6">No documents yet</p>
+          ) : (
+            docs.map((doc) => (
+              <div
+                key={doc.id}
+                className={`group flex items-center gap-2 px-3 py-2 rounded-xl cursor-pointer transition ${
+                  selectedDoc?.id === doc.id ? "bg-indigo-500/20 border border-indigo-500/40" : "hover:bg-slate-800"
+                }`}
+                onClick={() => selectDoc(doc)}
+              >
+                <FileText size={13} className={selectedDoc?.id === doc.id ? "text-indigo-400" : "text-slate-500"} />
+                <span className={`flex-1 text-xs truncate ${selectedDoc?.id === doc.id ? "text-indigo-300 font-medium" : "text-slate-400"}`}>
+                  {doc.title}
+                </span>
+                <button
+                  onClick={(e) => { e.stopPropagation(); deleteDoc(doc.id); }}
+                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-slate-600 hover:text-red-400 transition"
+                >
+                  <Trash2 size={11} />
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* Editor */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {!selectedDoc ? (
+          <div className="flex-1 flex flex-col items-center justify-center gap-4 text-center p-8">
+            <div className="w-16 h-16 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center">
+              <FileText size={28} className="text-slate-600" />
+            </div>
+            <div>
+              <p className="text-slate-300 font-medium">No document selected</p>
+              <p className="text-slate-600 text-sm mt-1">Select a document or create a new one</p>
+            </div>
+            <button onClick={createDoc} className="flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 text-white text-sm font-semibold">
+              <Plus size={16} /> New Document
+            </button>
+          </div>
+        ) : (
+          <>
+            {/* Toolbar */}
+            <div className="flex items-center gap-1 px-4 py-2 border-b border-slate-800 bg-slate-900/50 flex-wrap shrink-0">
+              {toolbar.map((item, i) => {
+                if (item === null) return <div key={`sep-${i}`} className="w-px h-5 bg-slate-700 mx-1" />;
+                const Icon = item.icon;
+                return (
+                  <button
+                    key={item.cmd + (item.value || "")}
+                    onClick={() => execCmd(item.cmd, item.value)}
+                    title={item.title}
+                    className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition"
+                  >
+                    <Icon size={15} />
+                  </button>
+                );
+              })}
+              <div className="flex-1" />
+              <div className="flex items-center gap-2">
+                {lastSaved && (
+                  <span className="text-slate-600 text-xs flex items-center gap-1">
+                    <Clock size={11} /> Saved {lastSaved.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+                  </span>
+                )}
+                {saving && <span className="text-indigo-400 text-xs">Saving…</span>}
+                <button
+                  onClick={fetchVersions}
+                  className="flex items-center gap-1 text-xs text-slate-500 hover:text-white px-2 py-1 rounded-lg hover:bg-slate-800 transition"
+                >
+                  <History size={13} /> v{selectedDoc.version}
+                </button>
+                <button
+                  onClick={() => saveDoc(selectedDoc.id, title, content)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-500 transition"
+                >
+                  <Save size={13} /> Save
+                </button>
+              </div>
+            </div>
+
+            {/* Title */}
+            <div className="px-8 pt-6 pb-2">
+              <input
+                type="text"
+                value={title}
+                onChange={handleTitleChange}
+                placeholder="Document title…"
+                className="w-full text-3xl font-bold text-white bg-transparent outline-none placeholder:text-slate-700"
+              />
+              <div className="flex items-center gap-2 mt-2 text-slate-600 text-xs">
+                <span>by {selectedDoc.creator?.full_name}</span>
+                <span>•</span>
+                <span>{new Date(selectedDoc.updated_at).toLocaleDateString("en-IN")}</span>
+                <span>•</span>
+                <span>v{selectedDoc.version}</span>
+              </div>
+            </div>
+
+            {/* Editable Content */}
+            <div className="flex-1 overflow-y-auto px-8 py-4">
+              <div
+                ref={editorRef}
+                contentEditable
+                suppressContentEditableWarning
+                onInput={handleEditorInput}
+                onKeyDown={handleKeyDown}
+                data-placeholder="Start writing here…"
+                className="min-h-full outline-none text-slate-200 leading-8 text-base
+                  [&_h1]:text-3xl [&_h1]:font-bold [&_h1]:text-white [&_h1]:mb-3 [&_h1]:mt-4
+                  [&_h2]:text-xl [&_h2]:font-bold [&_h2]:text-white [&_h2]:mb-2 [&_h2]:mt-3
+                  [&_h3]:text-lg [&_h3]:font-semibold [&_h3]:text-white [&_h3]:mb-1.5 [&_h3]:mt-2
+                  [&_p]:mb-2 [&_ul]:pl-6 [&_ul]:mb-2 [&_ul_li]:list-disc [&_ul_li]:mb-1
+                  [&_ol]:pl-6 [&_ol]:mb-2 [&_ol_li]:list-decimal [&_ol_li]:mb-1
+                  [&_pre]:bg-slate-900 [&_pre]:border [&_pre]:border-slate-700 [&_pre]:rounded-lg [&_pre]:p-4 [&_pre]:my-3 [&_pre]:font-mono [&_pre]:text-sm [&_pre]:overflow-x-auto
+                  [&_strong]:font-bold [&_strong]:text-white [&_em]:italic [&_em]:text-slate-300
+                  empty:before:content-[attr(data-placeholder)] empty:before:text-slate-700 empty:before:pointer-events-none"
+              />
+            </div>
+
+            {/* Version History Panel */}
+            {showVersions && (
+              <div className="border-t border-slate-800 bg-slate-900 max-h-48 overflow-y-auto shrink-0">
+                <div className="flex items-center justify-between px-4 py-2 border-b border-slate-800">
+                  <span className="text-white text-xs font-semibold flex items-center gap-1.5"><History size={13} /> Version History</span>
+                  <button onClick={() => setShowVersions(false)} className="text-slate-500 hover:text-white transition"><X size={14} /></button>
+                </div>
+                {versions.length === 0 ? (
+                  <p className="text-slate-500 text-xs text-center py-4">No previous versions</p>
+                ) : (
+                  versions.map((v) => (
+                    <div key={v.id} className="flex items-center justify-between px-4 py-2.5 border-b border-slate-800 hover:bg-slate-800 transition">
+                      <div>
+                        <p className="text-white text-xs font-medium">v{v.version_number} – {v.title}</p>
+                        <p className="text-slate-500 text-xs">
+                          by {v.editor?.username} • {new Date(v.created_at).toLocaleString("en-IN")}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => restoreVersion(v.id)}
+                        className="flex items-center gap-1 text-xs text-indigo-400 hover:text-indigo-300 px-2 py-1 rounded-lg hover:bg-slate-700 transition"
+                      >
+                        <RotateCcw size={11} /> Restore
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default DocumentEditor;
+ 
+===== WEBSOCKET ===== 
+let socket = null;
+let listeners = [];
+let reconnectTimer = null;
+let currentWorkspaceId = null;
+let currentUserId = null;
+
+export const connectWebSocket = (workspaceId, userId) => {
+  if (socket && socket.readyState === WebSocket.OPEN) return;
+  currentWorkspaceId = workspaceId;
+  currentUserId = userId;
+  const wsUrl = import.meta.env.VITE_WS_URL || "wss://nexcollab-backend.onrender.com";
+  socket = new WebSocket(`${wsUrl}/ws/${workspaceId}/${userId}`);
+
+  socket.onopen = () => {
+    console.log("✅ WebSocket Connected");
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  };
+
+  socket.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      listeners.forEach((cb) => cb(data));
+    } catch (e) {
+      console.error("WS parse error:", e);
+    }
+  };
+
+  socket.onclose = () => {
+    console.log("❌ WebSocket Disconnected");
+    socket = null;
+    // Auto-reconnect after 3s
+    if (currentWorkspaceId && currentUserId) {
+      reconnectTimer = setTimeout(() => {
+        connectWebSocket(currentWorkspaceId, currentUserId);
+      }, 3000);
+    }
+  };
+
+  socket.onerror = (error) => {
+    console.error("❌ WebSocket Error:", error);
+  };
+};
+
+export const sendWSMessage = (data) => {
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify(data));
+    return true;
+  }
+  return false;
+};
+
+export const addWSListener = (callback) => {
+  if (!listeners.includes(callback)) {
+    listeners.push(callback);
+  }
+};
+
+export const removeWSListener = (callback) => {
+  listeners = listeners.filter((cb) => cb !== callback);
+};
+
+export const disconnectWebSocket = () => {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  currentWorkspaceId = null;
+  currentUserId = null;
+  if (socket) {
+    socket.close();
+    socket = null;
+  }
+  listeners = [];
+};
+
+export const getWSStatus = () => {
+  if (!socket) return "disconnected";
+  switch (socket.readyState) {
+    case WebSocket.CONNECTING: return "connecting";
+    case WebSocket.OPEN: return "connected";
+    case WebSocket.CLOSING: return "closing";
+    case WebSocket.CLOSED: return "disconnected";
+    default: return "unknown";
+  }
+};
+ 
+===== WORKSPACE ===== 
+import { useState, useEffect } from "react";
+import {
+  useParams,
+  useNavigate,
+  Link,
+  useSearchParams,
+} from "react-router-dom";
+import {
+  MessageSquare, FileText, Users, Upload, Sparkles,
+  Activity, ArrowLeft, Settings, Wifi, WifiOff, ChevronDown
+} from "lucide-react";
+import api from "../services/api";
+import { connectWebSocket, disconnectWebSocket, addWSListener, removeWSListener, getWSStatus } from "../services/websocket";
+import ChatPanel from "../components/ChatPanel";
+import DocumentEditor from "../components/DocumentEditor";
+import MemberList from "../components/MemberList";
+import ActivityFeed from "../components/ActivityFeed";
+import FileManager from "../components/FileManager";
+import AIPanel from "../components/AIPanel";
+import toast from "react-hot-toast";
+
+const TABS = [
+  { id: "chat",     label: "Chat",     icon: MessageSquare },
+  { id: "docs",     label: "Docs",     icon: FileText },
+  { id: "members",  label: "Members",  icon: Users },
+  { id: "files",    label: "Files",    icon: Upload },
+  { id: "ai",       label: "AI",       icon: Sparkles },
+  { id: "activity", label: "Activity", icon: Activity },
+];
+
+function Workspace() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+
+  // Read initial tab from URL
+  const initialTab =
+    searchParams.get("tab") === "documents"
+      ? "docs"
+      : searchParams.get("tab") || "chat";
+
+  const [workspace, setWorkspace] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState(initialTab);
+  const [wsConnected, setWsConnected] = useState(false);
+  const [onlineUsers, setOnlineUsers] = useState([]);
+  const [currentDoc, setCurrentDoc] = useState(null);
+  const [unreadChat, setUnreadChat] = useState(0);
+  const currentUser = JSON.parse(localStorage.getItem("user")) || {};
+
+  // Keep activeTab in sync with URL changes
+  useEffect(() => {
+    const tab = searchParams.get("tab");
+    if (!tab) return;
+    if (tab === "documents") {
+      setActiveTab("docs");
+    } else if (["chat", "docs", "members", "files", "ai", "activity"].includes(tab)) {
+      setActiveTab(tab);
+    }
+  }, [searchParams]);
+
+  useEffect(() => {
+    fetchWorkspace();
+    return () => disconnectWebSocket();
+  }, [id]);
+
+  useEffect(() => {
+    if (!workspace) return;
+    connectWebSocket(Number(id), currentUser.id);
+
+    const handler = (data) => {
+      if (data.type === "connection_established") {
+        setWsConnected(true);
+        setOnlineUsers(data.online_users || []);
+      } else if (data.type === "user_left") {
+        setOnlineUsers((prev) => prev.filter((uid) => uid !== data.user_id));
+      } else if (data.type === "presence") {
+        setOnlineUsers((prev) =>
+          data.status === "online"
+            ? prev.includes(data.user_id) ? prev : [...prev, data.user_id]
+            : prev.filter((uid) => uid !== data.user_id)
+        );
+      } else if (data.type === "chat_message" && activeTab !== "chat") {
+        setUnreadChat((n) => n + 1);
+      }
+    };
+
+    addWSListener(handler);
+    return () => removeWSListener(handler);
+  }, [workspace, id, activeTab]);
+
+  const fetchWorkspace = async () => {
+    try {
+      setLoading(true);
+      const res = await api.get(`/api/workspaces/${id}`);
+      setWorkspace(res.data);
+    } catch {
+      toast.error("Workspace not found or access denied");
+      navigate("/dashboard");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleTabChange = (tabId) => {
+    setActiveTab(tabId);
+    if (tabId === "chat") setUnreadChat(0);
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-10 h-10 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+          <p className="text-slate-400 text-sm">Loading workspace…</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-950 flex flex-col">
+      {/* Top bar */}
+      <header className="h-14 border-b border-slate-800 bg-slate-950/90 backdrop-blur-xl px-4 flex items-center gap-4 sticky top-0 z-40">
+        <Link to="/dashboard" className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition">
+          <ArrowLeft size={18} />
+        </Link>
+        <div className="flex-1 min-w-0">
+          <h1 className="text-white font-bold text-base truncate">{workspace?.name}</h1>
+          {workspace?.description && (
+            <p className="text-slate-500 text-xs truncate">{workspace.description}</p>
+          )}
+        </div>
+        <div className="flex items-center gap-3 shrink-0">
+          {/* Online Users */}
+          {onlineUsers.length > 0 && (
+            <div className="hidden sm:flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-500" />
+              <span className="text-emerald-400 text-xs">{onlineUsers.length} online</span>
+            </div>
+          )}
+          {/* WS Status */}
+          <div className="flex items-center gap-1.5">
+            {wsConnected
+              ? <Wifi size={14} className="text-emerald-400" />
+              : <WifiOff size={14} className="text-slate-500" />
+            }
+          </div>
+          {/* Invite code quick copy */}
+          {workspace?.invite_code && (
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(workspace.invite_code);
+                toast.success("Invite code copied!");
+              }}
+              className="hidden sm:block px-3 py-1 rounded-lg bg-slate-800 text-slate-400 hover:text-white text-xs font-mono transition"
+              title="Copy invite code"
+            >
+              {workspace.invite_code}
+            </button>
+          )}
+        </div>
+      </header>
+
+      {/* Tab bar */}
+      <div className="border-b border-slate-800 bg-slate-900/50 px-4 flex items-center gap-1 overflow-x-auto shrink-0">
+        {TABS.map((tab) => {
+          const Icon = tab.icon;
+          const isActive = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => handleTabChange(tab.id)}
+              className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition whitespace-nowrap border-b-2 relative ${
+                isActive
+                  ? "text-indigo-400 border-indigo-500"
+                  : "text-slate-500 border-transparent hover:text-slate-300"
+              }`}
+            >
+              <Icon size={15} />
+              {tab.label}
+              {tab.id === "chat" && unreadChat > 0 && (
+                <span className="absolute -top-0 right-1 w-4 h-4 rounded-full bg-red-500 text-white text-xs flex items-center justify-center font-bold">
+                  {unreadChat > 9 ? "9+" : unreadChat}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 overflow-hidden">
+        <div className={`h-full ${activeTab !== "chat" ? "hidden" : ""}`}>
+          <div style={{ height: "calc(100vh - 112px)" }}>
+            <ChatPanel workspaceId={Number(id)} />
+          </div>
+        </div>
+
+        <div className={`h-full overflow-hidden ${activeTab !== "docs" ? "hidden" : ""}`}>
+          <div style={{ height: "calc(100vh - 112px)" }}>
+            <DocumentEditor
+              workspaceId={Number(id)}
+              onDocumentChange={(doc) => setCurrentDoc(doc)}
+            />
+          </div>
+        </div>
+
+        <div className={`overflow-y-auto ${activeTab !== "members" ? "hidden" : ""}`} style={{ height: "calc(100vh - 112px)" }}>
+          <MemberList workspace={workspace} onlineUsers={onlineUsers} />
+        </div>
+
+        <div className={`overflow-y-auto ${activeTab !== "files" ? "hidden" : ""}`} style={{ height: "calc(100vh - 112px)" }}>
+          <FileManager workspaceId={Number(id)} />
+        </div>
+
+        <div className={`h-full overflow-hidden ${activeTab !== "ai" ? "hidden" : ""}`}>
+          <div style={{ height: "calc(100vh - 112px)" }}>
+            <AIPanel workspaceId={Number(id)} currentDocument={currentDoc} />
+          </div>
+        </div>
+
+        <div className={`overflow-y-auto ${activeTab !== "activity" ? "hidden" : ""}`} style={{ height: "calc(100vh - 112px)" }}>
+          <ActivityFeed workspaceId={Number(id)} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default Workspace; 
+===== BACKEND MAIN ===== 
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy.orm import Session
+import json, os
+
+from database import engine, get_db, Base
+from models import user as user_model, workspace as ws_model, document as doc_model
+from models import message as msg_model, file as file_model, notification as notif_model
+from routers import auth, workspaces, documents, messages, ai_assistant, files, notifications, search
+from core.config import settings
+from core.websocket_manager import ConnectionManager
+
+Base.metadata.create_all(bind=engine)
+
+os.makedirs("uploads", exist_ok=True)
+
+app = FastAPI(
+    title="NexCollab API",
+    description="Real-time collaborative workspace with AI assistance",
+    version="2.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        settings.FRONTEND_URL,
+        "http://localhost:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
+manager = ConnectionManager()
+
+app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
+app.include_router(workspaces.router, prefix="/api/workspaces", tags=["Workspaces"])
+app.include_router(documents.router, prefix="/api/documents", tags=["Documents"])
+app.include_router(messages.router, prefix="/api/messages", tags=["Messages"])
+app.include_router(ai_assistant.router, prefix="/api/ai", tags=["AI Assistant"])
+app.include_router(files.router, prefix="/api/files", tags=["Files"])
+app.include_router(notifications.router, prefix="/api/notifications", tags=["Notifications"])
+app.include_router(search.router, prefix="/api/search", tags=["Search"])
+
+
+@app.get("/")
+def root():
+    return {"message": "NexCollab API v2.0 running", "docs": "/docs"}
+
+
+@app.get("/api/health")
+def health():
+    return {"status": "healthy", "version": "2.0.0"}
+
+
+@app.websocket("/ws/{workspace_id}/{user_id}")
+async def websocket_endpoint(
+    websocket: WebSocket,
+    workspace_id: int,
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    await manager.connect(websocket, workspace_id, user_id)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            message = json.loads(data)
+            event_type = message.get("type")
+
+            if event_type == "chat_message":
+                from models.message import Message
+                from models.user import User
+                msg = Message(
+                    content=message.get("content"),
+                    workspace_id=workspace_id,
+                    sender_id=user_id
+                )
+                db.add(msg)
+                db.commit()
+                db.refresh(msg)
+                user = db.query(User).filter(User.id == user_id).first()
+                await manager.broadcast_to_workspace(
+                    workspace_id,
+                    {
+                        "type": "chat_message",
+                        "id": msg.id,
+                        "user_id": user_id,
+                        "username": user.username if user else "Unknown",
+                        "full_name": user.full_name if user else "Unknown",
+                        "avatar_color": user.avatar_color if user else "#6366f1",
+                        "content": message.get("content"),
+                        "timestamp": msg.created_at.isoformat()
+                    }
+                )
+
+            elif event_type == "typing":
+                await manager.broadcast_to_workspace(
+                    workspace_id,
+                    {
+                        "type": "typing",
+                        "user_id": user_id,
+                        "username": message.get("username"),
+                        "is_typing": message.get("is_typing", True)
+                    },
+                    exclude_user=user_id
+                )
+
+            elif event_type == "document_update":
+                await manager.broadcast_to_workspace(
+                    workspace_id,
+                    {
+                        "type": "document_update",
+                        "document_id": message.get("document_id"),
+                        "content": message.get("content"),
+                        "title": message.get("title"),
+                        "user_id": user_id,
+                        "username": message.get("username"),
+                    },
+                    exclude_user=user_id
+                )
+
+            elif event_type == "cursor_move":
+                await manager.broadcast_to_workspace(
+                    workspace_id,
+                    {
+                        "type": "cursor_move",
+                        "user_id": user_id,
+                        "username": message.get("username"),
+                        "document_id": message.get("document_id"),
+                        "position": message.get("position")
+                    },
+                    exclude_user=user_id
+                )
+
+            elif event_type == "presence":
+                await manager.broadcast_to_workspace(
+                    workspace_id,
+                    {
+                        "type": "presence",
+                        "user_id": user_id,
+                        "username": message.get("username"),
+                        "status": message.get("status", "online")
+                    },
+                    exclude_user=user_id
+                )
+
+    except WebSocketDisconnect:
+        manager.disconnect(websocket, workspace_id, user_id)
+        await manager.broadcast_to_workspace(
+            workspace_id,
+            {"type": "user_left", "user_id": user_id}
+        )
+ 
+===== WEBSOCKET MANAGER ===== 
+from fastapi import WebSocket
+from typing import Dict, List, Set
+import json
+
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[int, List[tuple]] = {}
+        self.user_workspaces: Dict[int, Set[int]] = {}
+
+    async def connect(self, websocket: WebSocket, workspace_id: int, user_id: int):
+        await websocket.accept()
+        if workspace_id not in self.active_connections:
+            self.active_connections[workspace_id] = []
+        self.active_connections[workspace_id].append((websocket, user_id))
+        if user_id not in self.user_workspaces:
+            self.user_workspaces[user_id] = set()
+        self.user_workspaces[user_id].add(workspace_id)
+        online_users = list(set(uid for _, uid in self.active_connections[workspace_id]))
+        await websocket.send_text(json.dumps({
+            "type": "connection_established",
+            "online_users": online_users,
+            "workspace_id": workspace_id
+        }))
+
+    def disconnect(self, websocket: WebSocket, workspace_id: int, user_id: int):
+        if workspace_id in self.active_connections:
+            self.active_connections[workspace_id] = [
+                (ws, uid) for ws, uid in self.active_connections[workspace_id]
+                if ws != websocket
+            ]
+            if not self.active_connections[workspace_id]:
+                del self.active_connections[workspace_id]
+        if user_id in self.user_workspaces:
+            self.user_workspaces[user_id].discard(workspace_id)
+
+    async def broadcast_to_workspace(self, workspace_id: int, message: dict, exclude_user: int = None):
+        if workspace_id not in self.active_connections:
+            return
+        dead_connections = []
+        for websocket, user_id in self.active_connections[workspace_id]:
+            if exclude_user and user_id == exclude_user:
+                continue
+            try:
+                await websocket.send_text(json.dumps(message))
+            except Exception:
+                dead_connections.append((websocket, user_id))
+        for conn in dead_connections:
+            self.active_connections[workspace_id] = [
+                c for c in self.active_connections[workspace_id] if c != conn
+            ]
+
+    def get_online_users(self, workspace_id: int) -> List[int]:
+        if workspace_id not in self.active_connections:
+            return []
+        return list(set(uid for _, uid in self.active_connections[workspace_id]))
